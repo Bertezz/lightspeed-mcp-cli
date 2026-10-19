@@ -1,0 +1,51 @@
+# --- Python bytecode / build artifacts ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+wheels/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Tool caches ---
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytest_cache/
+
+# --- Test / coverage output ---
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+junit*.xml
+.tox/
+.nox/
+
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+
+# --- IDEs / editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS files ---
+.DS_Store
+Thumbs.db
+desktop.ini
