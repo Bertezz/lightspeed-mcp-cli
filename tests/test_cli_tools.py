@@ -21,7 +21,7 @@ def test_tools_list_shows_builtin_tools() -> None:
     result = runner.invoke(app, ["tools", "list"])
 
     assert result.exit_code == 0
-    for name in ("get_cpu_usage", "get_memory_usage", "get_disk_usage"):
+    for name in ("get_system_metrics", "get_disk_usage", "inspect_git_status"):
         assert name in result.output
 
 
@@ -30,17 +30,29 @@ def test_tools_list_json_is_the_openai_format() -> None:
 
     assert result.exit_code == 0
     tools = json.loads(result.output)
-    assert {tool["function"]["name"] for tool in tools} >= {"get_cpu_usage"}
+    assert {tool["function"]["name"] for tool in tools} >= {"get_system_metrics"}
     assert all(tool["type"] == "function" for tool in tools)
 
 
 def test_tools_run_prints_json_output(mocker: MockerFixture) -> None:
-    mocker.patch("lightspeed_cli.tools.system.psutil.cpu_percent", return_value=42.0)
+    mocker.patch(
+        "lightspeed_cli.tools.system_tools.psutil.cpu_percent", return_value=42.0
+    )
 
-    result = runner.invoke(app, ["tools", "run", "get_cpu_usage", '{"interval": 0.1}'])
+    result = runner.invoke(
+        app, ["tools", "run", "get_system_metrics", '{"cpu_interval": 0.1}']
+    )
 
     assert result.exit_code == 0
-    assert json.loads(result.output)["percent"] == 42.0
+    assert json.loads(result.output)["cpu"]["percent"] == 42.0
+
+
+def test_tools_run_inspect_git_status_outside_a_repository() -> None:
+    # conftest.py runs every test in an empty temporary folder: not a repo.
+    result = runner.invoke(app, ["tools", "run", "inspect_git_status"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)["is_git_repo"] is False
 
 
 def test_tools_run_reports_tool_errors() -> None:
@@ -60,7 +72,7 @@ def test_tools_run_reports_unknown_tool() -> None:
 
 
 def test_tools_run_rejects_invalid_json() -> None:
-    result = runner.invoke(app, ["tools", "run", "get_cpu_usage", "{not json"])
+    result = runner.invoke(app, ["tools", "run", "get_system_metrics", "{not json"])
 
     assert result.exit_code == 2
     assert "not valid JSON" in result.output
