@@ -265,3 +265,61 @@ class ToolExecutionResult(_FrozenModel):
         else:
             content = json.dumps(self.output, ensure_ascii=False)
         return ChatMessage.tool(tool_call_id, content)
+
+
+# --------------------------------------------------------------------------- #
+# Results of a chat turn (produced by client.AssistantClient)
+# --------------------------------------------------------------------------- #
+class TokenUsage(_FrozenModel):
+    """How many tokens (pieces of words) the model read and wrote.
+
+    Providers bill per token, so this is worth showing. Some local servers do
+    not report usage; then everything stays 0.
+    """
+
+    prompt_tokens: int = 0  # tokens sent to the model
+    completion_tokens: int = 0  # tokens the model generated
+    total_tokens: int = 0
+
+    def __add__(self, other: Self) -> Self:
+        # Defining __add__ makes ``usage_a + usage_b`` work. One question can
+        # take several requests, and we add up the usage of all of them.
+        return type(self)(
+            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
+            completion_tokens=self.completion_tokens + other.completion_tokens,
+            total_tokens=self.total_tokens + other.total_tokens,
+        )
+
+
+class ToolRun(_FrozenModel):
+    """One tool execution that happened while answering a question."""
+
+    call_id: str
+    name: str
+    arguments: dict[str, JsonValue]
+    result: ToolExecutionResult
+    duration_seconds: float = Field(ge=0)
+
+
+class ChatResult(_FrozenModel):
+    """Everything produced by one ``AssistantClient.chat()`` call."""
+
+    reply: str
+    """The assistant's final answer."""
+
+    messages: tuple[ChatMessage, ...]
+    """The whole conversation so far (without the system prompt). Pass it as
+    ``history`` to the next ``chat()`` call to continue the conversation."""
+
+    usage: TokenUsage = Field(default_factory=TokenUsage)
+    """Tokens used, added up over every request made for this question."""
+
+    iterations: int = Field(ge=1)
+    """How many requests were sent to the model for this question."""
+
+    tool_runs: tuple[ToolRun, ...] = ()
+    """Every tool executed along the way, in order."""
+
+    finish_reason: str | None = None
+    """Why the model stopped: "stop" is normal; "length" means the answer was
+    cut off because it hit the maximum output length."""

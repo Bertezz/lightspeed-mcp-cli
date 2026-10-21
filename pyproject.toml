@@ -24,7 +24,7 @@ dependencies = [
     "rich>=13.7.0",
     "pydantic>=2.11.0",
     "pydantic-settings>=2.9.0",
-    "openai>=1.30.0",
+    "openai>=3.35,<4",  # client.py uses 3.x APIs (openai.omit, httpx2)
     "psutil>=5.9.0",
 ]
 
@@ -37,6 +37,9 @@ dev = [
     "ruff>=0.4.0",
     "mypy>=1.10.0",
     "types-psutil",
+    # The HTTP library under the openai SDK; tests use its MockTransport to fake
+    # a model server, so we depend on it directly instead of by accident.
+    "httpx2",
 ]
 
 [project.scripts]

@@ -233,3 +233,38 @@ def test_get_settings_is_cached() -> None:
     get_settings.cache_clear()
 
     assert get_settings() is not first
+
+
+def test_agent_loop_defaults() -> None:
+    settings = Settings()
+
+    assert settings.max_tool_iterations == 5
+    assert settings.llm_max_retries == 2
+
+
+def test_agent_loop_settings_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LIGHTSPEED_MAX_TOOL_ITERATIONS", "10")
+    monkeypatch.setenv("LLM_MAX_RETRIES", "0")
+
+    settings = Settings()
+
+    assert settings.max_tool_iterations == 10
+    assert settings.llm_max_retries == 0
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("MAX_TOOL_ITERATIONS", "0"),
+        ("MAX_TOOL_ITERATIONS", "21"),
+        ("LLM_MAX_RETRIES", "-1"),
+        ("LLM_MAX_RETRIES", "11"),
+    ],
+)
+def test_agent_loop_settings_reject_out_of_range(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError):
+        Settings()

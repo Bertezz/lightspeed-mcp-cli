@@ -80,6 +80,24 @@ class Settings(BaseSettings):
         le=600,
         validation_alias=AliasChoices("LIGHTSPEED_REQUEST_TIMEOUT", "REQUEST_TIMEOUT"),
     )
+    # How many request -> tool calls -> request rounds one question may take
+    # before the assistant is stopped (protects against endless tool loops).
+    max_tool_iterations: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        validation_alias=AliasChoices(
+            "LIGHTSPEED_MAX_TOOL_ITERATIONS", "MAX_TOOL_ITERATIONS"
+        ),
+    )
+    # How often the openai SDK itself retries a failed request (rate limits,
+    # server errors, dropped connections), waiting a little longer each time.
+    llm_max_retries: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        validation_alias=AliasChoices("LIGHTSPEED_LLM_MAX_RETRIES", "LLM_MAX_RETRIES"),
+    )
 
     # ----------------------------------------------------------------------- #
     # Validators: small functions Pydantic calls while building the object.
