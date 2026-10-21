@@ -97,6 +97,9 @@ PLACEHOLDER_API_KEY = "not-needed"
 # Stands in for a tool name the model invented that our schemas cannot store.
 INVALID_TOOL_NAME = "invalid_tool_name"
 
+# How many question/answer turns trim_history keeps (see its docstring).
+MAX_HISTORY_TURNS = 20
+
 
 # --------------------------------------------------------------------------- #
 # Events: how the client reports progress without printing anything itself
@@ -137,6 +140,8 @@ class AssistantClient:
         settings: Settings | None = None,
         registry: ToolRegistry | None = None,
         *,
+        model: str | None = None,
+        temperature: float | None = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         on_event: Callable[[ToolEvent], None] | None = None,
         openai_client: AsyncOpenAI | None = None,
@@ -146,6 +151,10 @@ class AssistantClient:
         Args:
             settings: Configuration; defaults to ``get_settings()``.
             registry: Tools the model may call; defaults to the built-in tools.
+            model: Model name; defaults to ``settings.default_model``.
+            temperature: Randomness of the answers (0 = most predictable). When
+                ``None``, nothing is sent and the server's default applies;
+                some models reject the field entirely.
             system_prompt: Instructions sent before every conversation.
             on_event: Called when a tool starts and finishes (e.g. to show
                 progress in the terminal).
@@ -161,6 +170,8 @@ class AssistantClient:
         # has len() == 0, which Python treats as False, so it would silently be
         # replaced by the default one. ``is not None`` checks only for "missing".
         self._registry = registry if registry is not None else default_registry
+        self._model = model or self._settings.default_model
+        self._temperature = temperature
         self._system_prompt = system_prompt
         self._on_event = on_event
         self._owns_openai_client = openai_client is None
@@ -170,6 +181,17 @@ class AssistantClient:
             timeout=self._settings.request_timeout,
             max_retries=self._settings.llm_max_retries,
         )
+
+    # Read-only properties: callers can see these values but not change them.
+    @property
+    def model(self) -> str:
+        """The model this client sends requests to."""
+        return self._model
+
+    @property
+    def base_url(self) -> str:
+        """The server this client talks to."""
+        return str(self._openai.base_url)
 
     # ----------------------------------------------------------------------- #
     # Closing. ``async with`` calls __aenter__ on entry and __aexit__ on exit,
@@ -266,7 +288,10 @@ class AssistantClient:
         )
         try:
             return await self._openai.chat.completions.create(
-                model=self._settings.default_model,
+                model=self._model,
+                temperature=(
+                    self._temperature if self._temperature is not None else openai.omit
+                ),
                 messages=[
                     {"role": "system", "content": self._system_prompt},
                     *_to_openai_messages(messages),
@@ -294,7 +319,9 @@ class AssistantClient:
             # an error result the model can read, and the chat carries on.
             result = await self._registry.execute(call.name, call.arguments)
         duration = time.perf_counter() - started
-        logger.info("Tool %s finished: %s (%.2fs)", call.name, result.status, duration)
+        # DEBUG, not INFO: the CLI already shows a line per tool, so at the
+        # default LOG_LEVEL=INFO this would print everything twice.
+        logger.debug("Tool %s finished: %s (%.2fs)", call.name, result.status, duration)
         self._emit(ToolFinished(call.id, call.name, result, duration))
         return ToolRun(
             call_id=call.id,
@@ -307,6 +334,26 @@ class AssistantClient:
     def _emit(self, event: ToolEvent) -> None:
         if self._on_event is not None:
             self._on_event(event)
+
+
+def trim_history(
+    messages: Sequence[ChatMessage], max_turns: int = MAX_HISTORY_TURNS
+) -> tuple[ChatMessage, ...]:
+    """Keep only the last ``max_turns`` turns of a conversation.
+
+    Every model has a *context window*: a maximum amount of text per request.
+    Since each request contains the whole conversation, a long chat would
+    eventually be rejected. We therefore drop the oldest turns.
+
+    A turn starts at a user message and includes everything after it (tool
+    calls, tool results, the answer). Cutting only at user messages keeps each
+    tool call together with its result; a result without its call would make
+    the server reject the request.
+    """
+    turn_starts = [i for i, message in enumerate(messages) if message.role == "user"]
+    if len(turn_starts) <= max_turns:
+        return tuple(messages)
+    return tuple(messages[turn_starts[-max_turns] :])
 
 
 # --------------------------------------------------------------------------- #

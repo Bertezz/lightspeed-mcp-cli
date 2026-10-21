@@ -38,6 +38,7 @@ from lightspeed_cli.client import (
     ToolStarted,
     _to_openai_messages,
     _translate_openai_error,
+    trim_history,
 )
 from lightspeed_cli.config import Settings
 from lightspeed_cli.exceptions import (
@@ -701,3 +702,73 @@ async def test_error_body_without_message_field(
         await make_client().chat("Hi")
 
     assert "Not Found" in str(exc_info.value)
+
+
+# --------------------------------------------------------------------------- #
+# Model and temperature overrides (used by the CLI's --model/--temperature)
+# --------------------------------------------------------------------------- #
+async def test_model_and_temperature_overrides(
+    server: FakeLLMServer, make_client: ClientFactory
+) -> None:
+    server.queue(text_reply("ok"))
+    client = make_client(model="llama3.1", temperature=0.2)
+
+    await client.chat("Hi")
+
+    assert client.model == "llama3.1"
+    assert server.requests[0]["model"] == "llama3.1"
+    assert server.requests[0]["temperature"] == 0.2
+
+
+async def test_temperature_is_omitted_by_default(
+    server: FakeLLMServer, make_client: ClientFactory
+) -> None:
+    server.queue(text_reply("ok"))
+    client = make_client()
+
+    await client.chat("Hi")
+
+    assert client.model == "test-model"  # from settings
+    assert client.base_url == "http://fake.test/v1/"
+    # Some models reject "temperature" entirely, so it is not sent unless set.
+    assert "temperature" not in server.requests[0]
+
+
+# --------------------------------------------------------------------------- #
+# trim_history
+# --------------------------------------------------------------------------- #
+def turn(number: int, *, with_tool: bool = False) -> list[ChatMessage]:
+    """One question/answer turn, optionally with a tool call in between."""
+    messages = [ChatMessage.user(f"question {number}")]
+    if with_tool:
+        call = ToolCall(id=f"call_{number}", name="add")
+        messages += [
+            ChatMessage.assistant(tool_calls=[call]),
+            ChatMessage.tool(f"call_{number}", "2"),
+        ]
+    messages.append(ChatMessage.assistant(f"answer {number}"))
+    return messages
+
+
+def test_trim_history_keeps_short_conversations() -> None:
+    history = [*turn(1), *turn(2)]
+
+    assert trim_history(history, max_turns=2) == tuple(history)
+
+
+def test_trim_history_drops_oldest_whole_turns() -> None:
+    history = [*turn(1), *turn(2, with_tool=True), *turn(3)]
+
+    trimmed = trim_history(history, max_turns=2)
+
+    # Turn 1 is gone; turn 2 starts the history, with its tool call AND its
+    # result still together.
+    assert trimmed[0] == ChatMessage.user("question 2")
+    assert [m.role for m in trimmed] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "user",
+        "assistant",
+    ]

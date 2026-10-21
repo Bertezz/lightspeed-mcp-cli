@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from lightspeed_cli.config import Settings, get_settings
+from lightspeed_cli.config import Settings, _variable_names, get_settings
 
 
 def write_dotenv(directory: Path, content: str) -> None:
@@ -268,3 +268,10 @@ def test_agent_loop_settings_reject_out_of_range(
 
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_unknown_setting_location_is_shown_as_is() -> None:
+    # Defensive fallback: an error location that is not a known setting.
+    assert _variable_names("something_else") == "something_else"
+    assert _variable_names("openai_base_url") == "OPENAI_BASE_URL"
+    assert _variable_names("LOG_LEVEL") == "LIGHTSPEED_LOG_LEVEL / LOG_LEVEL"

@@ -15,8 +15,17 @@ Learning notes
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AliasChoices, Field, HttpUrl, SecretStr, field_validator
+from pydantic import (
+    AliasChoices,
+    Field,
+    HttpUrl,
+    SecretStr,
+    ValidationError,
+    field_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from lightspeed_cli.exceptions import ConfigurationError
 
 # ``Literal[...]`` means "exactly one of these values". Giving the type a name
 # (a *type alias*) lets us reuse it and makes signatures easier to read.
@@ -135,3 +144,40 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return the process-wide settings, loading them on first use."""
     return Settings()
+
+
+def load_settings() -> Settings:
+    """Like ``get_settings()``, but invalid settings raise ConfigurationError.
+
+    Pydantic's ValidationError is meant for programmers. A user who wrote
+    ``LOG_LEVEL=TRACE`` in their .env file should get a one-line explanation,
+    and the CLI shows every ConfigurationError that way.
+    """
+    try:
+        return get_settings()
+    except ValidationError as exc:
+        problems = "; ".join(
+            f"{_variable_names(str(error['loc'][0]))}: {error['msg']}"
+            for error in exc.errors()
+        )
+        raise ConfigurationError(
+            f"Invalid settings in the environment or .env file: {problems}"
+        ) from exc
+
+
+def _variable_names(location: str) -> str:
+    """Name a setting the way users write it, e.g. "LIGHTSPEED_LOG_LEVEL / LOG_LEVEL".
+
+    Pydantic reports only the *first* alias, so a user who wrote LOG_LEVEL would
+    otherwise be told about LIGHTSPEED_LOG_LEVEL and wonder where that came from.
+    """
+    for field_name, field in Settings.model_fields.items():
+        alias = field.validation_alias
+        choices = (
+            [choice for choice in alias.choices if isinstance(choice, str)]
+            if isinstance(alias, AliasChoices)
+            else []
+        )
+        if location == field_name or location in choices:
+            return " / ".join(choices) if choices else field_name.upper()
+    return location
