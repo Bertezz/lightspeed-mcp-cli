@@ -1,4 +1,15 @@
-"""Tests for the core domain schemas."""
+"""Tests for the core domain schemas.
+
+Learning notes
+--------------
+* ``Model.model_validate(dict)`` builds a model from plain Python data. Tests use
+  it for *invalid* input, because writing ``ChatMessage(role="robot")`` directly
+  would already be flagged by mypy before the test even runs.
+* A "round trip" (object -> JSON -> object) proves nothing is lost when data
+  travels to the AI API and back.
+* ``ids=[...]`` in ``parametrize`` gives each case a readable name in the pytest
+  output, e.g. ``test_chat_message_rejects_invalid[tool-without-id]``.
+"""
 
 from typing import Any
 
@@ -222,6 +233,19 @@ def test_tool_definition_accepts_valid_names(name: str) -> None:
 def test_tool_definition_rejects_invalid(payload: dict[str, Any]) -> None:
     with pytest.raises(ValidationError):
         ToolDefinition.model_validate(payload)
+
+
+def test_to_mcp_tool() -> None:
+    assert CPU_TOOL.to_mcp_tool() == {
+        "name": "get_cpu",
+        "description": "Read CPU usage.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"interval": {"type": "number"}},
+            "required": ["interval"],
+            "additionalProperties": False,
+        },
+    }
 
 
 def test_to_openai_tool() -> None:

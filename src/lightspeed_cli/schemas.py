@@ -1,5 +1,21 @@
 """Core domain schemas: chat messages, tool contracts and execution results.
 
+Learning notes
+--------------
+A *schema* describes what a piece of data must look like. Each class below is a
+Pydantic ``BaseModel``: you declare fields with type hints, and Pydantic
+
+* checks every object you create (wrong data raises ``ValidationError``),
+* converts objects to JSON (``model_dump_json()``) and back
+  (``model_validate_json()``). JSON is the text format APIs use to exchange data.
+
+These models are the shared vocabulary of the whole program: the AI client, the
+tool registry and the CLI all pass these objects around.
+
+A conversation with an AI is a list of ``ChatMessage`` objects. When the AI
+wants a tool run, its message contains ``ToolCall`` objects; we run the tool,
+get a ``ToolExecutionResult``, and send it back as a ``tool`` message.
+
 All models are immutable. ``dict`` fields cannot be reassigned but their
 contents can still be mutated; treat them as read-only.
 """
@@ -17,14 +33,27 @@ from pydantic import (
     model_validator,
 )
 
+# Who can speak in a conversation:
+#   system    -> instructions from us to the AI ("You are a Linux assistant")
+#   user      -> the human
+#   assistant -> the AI
+#   tool      -> our program, reporting the result of a tool the AI asked for
 Role = Literal["system", "user", "assistant", "tool"]
 ToolStatus = Literal["success", "error"]
 
-# OpenAI function-name constraint.
+# A *regular expression* (pattern for text). It reads as: from start (^) to end
+# ($), 1 to 64 characters, each a letter, digit, "_" or "-". OpenAI rejects tool
+# names that do not match, so we reject them first, with a clearer error.
 TOOL_NAME_PATTERN = r"^[a-zA-Z0-9_-]{1,64}$"
 
 
 class _FrozenModel(BaseModel):
+    """Shared base class: every model below inherits these two rules."""
+
+    # frozen=True    -> objects cannot be changed after creation. A message in a
+    #                   conversation history should never be silently edited.
+    # extra="forbid" -> unknown fields are errors, so a typo like contnet="hi"
+    #                   fails loudly instead of being silently ignored.
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
@@ -34,21 +63,32 @@ class _FrozenModel(BaseModel):
 class ToolCall(_FrozenModel):
     """A tool invocation requested by the assistant."""
 
+    # The id links a request to its answer: our result message repeats it in
+    # ``tool_call_id`` so the AI knows which request the result belongs to.
     id: str = Field(min_length=1)
     name: str = Field(pattern=TOOL_NAME_PATTERN)
+    # ``JsonValue`` = "anything JSON can represent" (str, int, float, bool, None,
+    # lists and dicts of those). Safer than ``Any``, which disables type checks.
+    # ``default_factory=dict`` creates a *new* empty dict for every object;
+    # a plain ``= {}`` default would be one dict shared by all objects.
     arguments: dict[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("arguments", mode="before")
     @classmethod
     def _parse_json_arguments(cls, value: object) -> object:
         """Accept arguments as a JSON-encoded string, as the OpenAI API sends."""
+        # OpenAI sends arguments as *text containing JSON*: '{"interval": 1}'.
+        # This turns that text into a real dict before normal validation runs.
         if not isinstance(value, str):
-            return value
+            return value  # already a dict (or junk Pydantic will reject)
         if not value.strip():
-            return {}
+            return {}  # "" means "no arguments"
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError as exc:
+            # ``raise ... from exc`` keeps the original error attached, which
+            # helps when debugging. Pydantic turns ValueError into a
+            # ValidationError with this message.
             raise ValueError(f"arguments is not valid JSON: {exc.msg}") from exc
         if not isinstance(parsed, dict):
             raise ValueError("arguments JSON must be an object")
@@ -60,9 +100,12 @@ class ChatMessage(_FrozenModel):
 
     role: Role
     content: str | None = None
+    # A tuple is an unchangeable list, which fits a frozen model.
     tool_calls: tuple[ToolCall, ...] | None = None
     tool_call_id: str | None = None
 
+    # A *model* validator sees all fields at once, so it can check rules that
+    # involve several fields. ``mode="after"`` runs once the fields are filled.
     @model_validator(mode="after")
     def _check_role_fields(self) -> Self:
         if self.tool_calls is not None and self.role != "assistant":
@@ -72,12 +115,17 @@ class ChatMessage(_FrozenModel):
                 raise ValueError("tool messages require tool_call_id")
         elif self.tool_call_id is not None:
             raise ValueError("tool_call_id is only allowed on tool messages")
+        # Only an assistant message that asks for tools may have no text.
         if self.content is None and not (self.role == "assistant" and self.tool_calls):
             raise ValueError(
                 "content is required unless an assistant message has tool_calls"
             )
         return self
 
+    # Convenience constructors: ChatMessage.user("hi") instead of
+    # ChatMessage(role="user", content="hi"). ``@classmethod`` means the method
+    # is called on the class, and receives the class as ``cls``. ``Self`` means
+    # "an instance of this class".
     @classmethod
     def system(cls, content: str) -> Self:
         return cls(role="system", content=content)
@@ -92,6 +140,7 @@ class ChatMessage(_FrozenModel):
         content: str | None = None,
         tool_calls: Sequence[ToolCall] | None = None,
     ) -> Self:
+        # Accept any sequence (e.g. a list) for convenience; store a tuple.
         return cls(
             role="assistant",
             content=content,
@@ -111,8 +160,21 @@ class ToolParameterSchema(_FrozenModel):
 
     Individual property schemas are kept as raw JSON, and unknown top-level
     keywords (e.g. ``$defs``) pass through, so MCP schemas round-trip intact.
+
+    Example (a tool taking one required number called ``interval``)::
+
+        {
+            "type": "object",
+            "properties": {"interval": {"type": "number"}},
+            "required": ["interval"],
+            "additionalProperties": false,
+        }
     """
 
+    # This model_config is *merged* with the parent's: it stays frozen, but
+    # allows extra keys (so JSON Schema keywords we do not model survive).
+    # JSON Schema spells it "additionalProperties" (camelCase) while Python style
+    # is snake_case; the alias settings accept both and always output camelCase.
     model_config = ConfigDict(
         extra="allow",
         validate_by_name=True,
@@ -127,6 +189,7 @@ class ToolParameterSchema(_FrozenModel):
 
     @model_validator(mode="after")
     def _check_required(self) -> Self:
+        # Saying "b is required" when there is no property b is a mistake.
         missing = [name for name in self.required if name not in self.properties]
         if missing:
             raise ValueError(f"required names not in properties: {', '.join(missing)}")
@@ -137,6 +200,8 @@ class ToolDefinition(_FrozenModel):
     """Metadata describing a tool that the assistant may call."""
 
     name: str = Field(pattern=TOOL_NAME_PATTERN)
+    # The AI reads the description to decide *when* to use the tool, so it is
+    # required and should be written for the AI, in plain language.
     description: str = Field(min_length=1)
     parameters: ToolParameterSchema = Field(default_factory=ToolParameterSchema)
 
@@ -149,6 +214,18 @@ class ToolDefinition(_FrozenModel):
                 "description": self.description,
                 "parameters": self.parameters.model_dump(mode="json", by_alias=True),
             },
+        }
+
+    def to_mcp_tool(self) -> dict[str, JsonValue]:
+        """Return the definition in MCP ``tools/list`` format.
+
+        Same information as :meth:`to_openai_tool`, different layout: MCP calls
+        the schema ``inputSchema`` and does not nest it under ``"function"``.
+        """
+        return {
+            "name": self.name,
+            "description": self.description,
+            "inputSchema": self.parameters.model_dump(mode="json", by_alias=True),
         }
 
 
@@ -167,6 +244,7 @@ class ToolExecutionResult(_FrozenModel):
             raise ValueError("success results must not set error")
         return self
 
+    # Shortcuts: ToolExecutionResult.ok(42) / ToolExecutionResult.fail("boom").
     @classmethod
     def ok(cls, output: JsonValue = None) -> Self:
         return cls(status="success", output=output)
@@ -177,6 +255,9 @@ class ToolExecutionResult(_FrozenModel):
 
     def to_message(self, tool_call_id: str) -> ChatMessage:
         """Build the ``tool`` message that reports this result to the model."""
+        # Message content must be text, so structured output is JSON-encoded.
+        # ensure_ascii=False keeps characters like "é" readable instead of
+        # escaping them as "é".
         if self.status == "error":
             content = f"Error: {self.error}"
         elif isinstance(self.output, str):

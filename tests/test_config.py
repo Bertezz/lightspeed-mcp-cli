@@ -1,4 +1,22 @@
-"""Tests for settings resolution and validation."""
+"""Tests for settings resolution and validation.
+
+Learning notes
+--------------
+Most tests follow three steps, separated by blank lines:
+
+1. **Arrange**: set up the situation (e.g. set an environment variable).
+2. **Act**: run the code under test (e.g. ``Settings()``).
+3. **Assert**: check the result.
+
+Patterns used here:
+
+* ``monkeypatch.setenv(...)`` sets an environment variable *for this test only*.
+* ``with pytest.raises(ValidationError):`` means "the code inside must fail with
+  this error". This is how we prove that bad input is rejected.
+* ``@pytest.mark.parametrize`` runs one test function several times with
+  different inputs, so each case shows up separately in the report.
+* The ``isolated_env`` fixture comes from ``conftest.py``.
+"""
 
 from pathlib import Path
 
@@ -201,6 +219,8 @@ def test_request_timeout_rejects_out_of_range(
 def test_settings_are_frozen() -> None:
     settings = Settings()
 
+    # mypy already knows this assignment is illegal (the model is frozen) and
+    # would report an error. ``# type: ignore[misc]`` says "yes, on purpose".
     with pytest.raises(ValidationError):
         settings.default_model = "other"  # type: ignore[misc]
 
